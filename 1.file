@@ -1,0 +1,24 @@
+
+// Client side implementation of UDP client-server model 
+#include <stdio.h> 
+#include <stdlib.h> 
+#include <unistd.h> 
+#include <string.h> 
+#include <sys/types.h> 
+#include <sys/socket.h> 
+#include <arpa/inet.h> 
+#include <netinet/in.h> 
+#include <time.h>
+#include <fcntl.h>
+  
+#define PORT 8080 
+#define MAXSEQNUM 25601
+#define MAXUDPSIZE 524 
+#define HEADERLENGTH 12
+#define MAXPAYLOADSIZE MAXUDPSIZE - HEADERLENGTH
+#define WINDOWSIZE 10
+
+
+int sockfd, filefd, n;
+struct sockaddr_in servaddr; 
+socklen_t len;

@@ -12,13 +12,24 @@
 #include <fcntl.h>
   
 #define PORT     8080 
-#define MAXLINE 1024 
-
+#define MAXUDPSIZE 524 
+#define HEADERLENGTH 12
 #define MAXSEQNUM 25601
 
-int sockfd; 
+int connection_order = 1;
+int sockfd, filefd; 
 struct sockaddr_in servaddr, cliaddr; 
+char buffer[MAXUDPSIZE];
+uint16_t AckNum, SeqNum;
 
+
+struct WindowPacket {
+    uint16_t received;
+    char buffer[MAXUDPSIZE - HEADERLENGTH];
+};
+
+struct WindowPacket window[10];
+uint16_t rcv_base;
 
 struct Header {
     uint16_t SeqNum;
@@ -27,46 +38,62 @@ struct Header {
     uint16_t SYN;
     uint16_t FIN;
     char zero[2];
-};
+} packet_header;
 
-void printHeader(struct Header* header) {
-    printf("%d %d %d %d %d\n", header->SeqNum, header->AckNum, header->ACK, header->SYN, header->FIN);
+void printHeader(struct Header* header, int sender, int dup) {
+    if (sender)
+        printf("SEND ");
+    else
+        printf("RECV ");
+    printf("%d %d ", header->SeqNum, header->AckNum);
+    if (header->SYN)
+        printf("SYN ");
+    else if (header->FIN)
+        printf("FIN ");
+    if (header->ACK && dup)
+        printf("DUP-ACK ");
+    if (header->ACK)
+        printf("ACK ");
+    printf("\n");
+    
 }
 
 int initConnection() {
-    char buffer[MAXLINE];
-    struct Header packet_header;
     memset(&packet_header, 0, sizeof(packet_header));
-    
     int n;
     socklen_t len = sizeof(cliaddr);
 
-    n = recvfrom(sockfd, (char *)buffer, MAXLINE,  
+    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
                 MSG_WAITALL, (struct sockaddr *) &cliaddr, 
                 &len); 
 
     memcpy(&packet_header, &buffer, 12);
-    printf("SYN packet from client: ");
-    printHeader(&packet_header);
-    if (packet_header.SYN != 1 || packet_header.FIN != 0 || packet_header.SeqNum >= MAXSEQNUM) {
-        fprintf(stderr, "Connection establishment failed due to invalid SYN packet\n");
-        return -1;
-    }
-    uint16_t cliSeqNum = packet_header.SeqNum;
+    printHeader(&packet_header, 0, 0);
+    AckNum = packet_header.SeqNum;
     memset(&packet_header, 0, sizeof(packet_header));
-    packet_header.SeqNum = rand() % MAXSEQNUM;
-    packet_header.AckNum = (cliSeqNum + 1) % MAXSEQNUM;
+    SeqNum = rand() % MAXSEQNUM;
+    packet_header.SeqNum = SeqNum;
+    packet_header.AckNum = (AckNum + 1) % MAXSEQNUM;
     packet_header.ACK = 1;
     packet_header.SYN = 1;
-    printf("SYNACK packet to client: ");
-    printHeader(&packet_header);
+    
     if (sendto(sockfd, (void *)&packet_header, sizeof(packet_header), 
         0, (const struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0) {
         perror("Error sending SYNACK to client");
         exit(EXIT_FAILURE);
     }
-    
+    printHeader(&packet_header, 1, 0);
+
     return 0;
+}
+
+int sendPacket() {
+    memset(&packet_header, 0, sizeof(packet_header));
+    
+}
+
+int receivePacket() {
+
 }
   
   
@@ -101,20 +128,21 @@ int main(int argc, char** argv) {
     } 
 
     initConnection();
-    /*  
-    int len, n; 
-  
-    len = sizeof(cliaddr);  //len is value/resuslt 
-  
-    n = recvfrom(sockfd, (char *)buffer, MAXLINE,  
-                MSG_WAITALL, ( struct sockaddr *) &cliaddr, 
+
+    socklen_t len = sizeof(cliaddr);
+    int n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
+                MSG_WAITALL, (struct sockaddr *) &cliaddr, 
                 &len); 
-    buffer[n] = '\0'; 
-    printf("Client : %s\n", buffer); 
-    sendto(sockfd, (const char *)hello, strlen(hello),  
-        0, (const struct sockaddr *) &cliaddr, 
-            len); 
-    printf("Hello message sent.\n");  
-    */
+    memcpy(&packet_header, &buffer, 12);
+    printHeader(&packet_header, 0, 0);
+    char file_name[8];
+    sprintf(file_name, "%d.file", connection_order);
+    if (n > 12) {
+        filefd = open(file_name, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
+        if (filefd < 0)
+            perror("Error opening file to write to");
+        write(filefd, &buffer[12], n - 12);
+    }
+    
     return 0; 
 } 

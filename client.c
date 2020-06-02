@@ -9,14 +9,33 @@
 #include <arpa/inet.h> 
 #include <netinet/in.h> 
 #include <time.h>
+#include <fcntl.h>
   
-#define PORT     8080 
-#define MAXLINE 1024 
-#define MAXSEQNUM 25600
+#define PORT 8080 
+#define MAXSEQNUM 25601
+#define MAXUDPSIZE 524 
+#define HEADERLENGTH 12
+#define MAXPAYLOADSIZE MAXUDPSIZE - HEADERLENGTH
+#define WINDOWSIZE 10
 
-int sockfd;
+
+int sockfd, filefd, n;
 struct sockaddr_in servaddr; 
+socklen_t len;
+char buffer[MAXUDPSIZE];
 
+struct WindowPacket {
+    uint16_t acked;
+    char buffer[MAXPAYLOADSIZE];
+};
+
+struct WindowPacket window[WINDOWSIZE];
+uint16_t send_base;
+uint16_t send_base_idx;
+uint16_t nextseqnum;
+uint16_t nextseqnum_idx;
+
+uint16_t AckNum;
 
 struct Header {
     uint16_t SeqNum;
@@ -25,40 +44,121 @@ struct Header {
     uint16_t SYN;
     uint16_t FIN;
     char zero[2];
-};
+} packet_header;
 
-void printHeader(struct Header* header) {
-    printf("%d %d %d %d %d\n", header->SeqNum, header->AckNum, header->ACK, header->SYN, header->FIN);
+void printHeader(struct Header* header, int sender, int dup) {
+    if (sender)
+        printf("SEND ");
+    else
+        printf("RECV ");
+    printf("%d %d ", header->SeqNum, header->AckNum);
+    if (header->SYN)
+        printf("SYN ");
+    else if (header->FIN)
+        printf("FIN ");
+    if (header->ACK && dup)
+        printf("DUP-ACK ");
+    if (header->ACK)
+        printf("ACK ");
+    printf("\n");
+    
 }
 
 int initConnection() {
-    char buffer[MAXLINE];
-    struct Header packet_header;
     memset(&packet_header, 0, sizeof(packet_header));
     srand(time(0));
-    packet_header.SeqNum = (rand() % MAXSEQNUM) % MAXSEQNUM;
+    uint16_t SeqNum = rand() % MAXSEQNUM;
+    packet_header.SeqNum = SeqNum;
     packet_header.SYN = 1;
-    printf("SYN packet to server: ");
-    printHeader(&packet_header);
+    printHeader(&packet_header, 1, 0);
     if (sendto(sockfd, (void *)&packet_header, sizeof(packet_header), 
         0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
         perror("Error sending SYN to server");
         exit(EXIT_FAILURE);
     }
-    int n;
-    socklen_t len = sizeof(servaddr);
-    n = recvfrom(sockfd, (char *)buffer, MAXLINE,  
+    len = sizeof(servaddr);
+    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
                 MSG_WAITALL, (struct sockaddr *) &servaddr, 
                 &len);
     if (n < 0) {
-        perror("Error receiving SYNACK from server");
+        perror("Error receiving SYN ACK from server");
         exit(EXIT_FAILURE);
     }
 
     memset(&packet_header, 0, sizeof(packet_header));
     memcpy(&packet_header, &buffer, 12);
-    printf("SYNACK from server: ");
-    printHeader(&packet_header);
+    printHeader(&packet_header, 0, 0);
+    AckNum = packet_header.SeqNum + 1;
+    send_base = packet_header.AckNum;
+    nextseqnum = send_base;
+    send_base_idx = 0;
+    nextseqnum_idx = 0;
+    memset(&window, 0, sizeof(window));
+
+    return 0;
+}
+
+int sendPacket() {
+    memset(&packet_header, 0, sizeof(packet_header));
+    packet_header.SeqNum = nextseqnum;
+    packet_header.AckNum = AckNum;
+    memset(&buffer, 0, sizeof(buffer));
+    memcpy(&buffer, &packet_header, HEADERLENGTH);
+    n = read(filefd, &buffer[HEADERLENGTH], MAXPAYLOADSIZE);
+    if (n < 0) {
+        perror("Error reading from filefd");
+        exit(EXIT_FAILURE);
+    }
+    memcpy(&window[nextseqnum_idx], &buffer[HEADERLENGTH], n);
+    if (sendto(sockfd, (void *)&buffer, HEADERLENGTH + n,
+            0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        perror("Error sending packet to server");
+        exit(EXIT_FAILURE);
+    }
+    printHeader(&packet_header, 1, 0);
+    
+    
+    nextseqnum_idx = (nextseqnum_idx + 1) % WINDOWSIZE;
+    nextseqnum = (nextseqnum + n) % MAXSEQNUM;
+
+
+    if (n < MAXPAYLOADSIZE) // sender has reached end of file
+        return 1;
+    else
+        return 0;
+}
+
+int receivePacket() {
+    memset(&buffer, 0, sizeof(buffer));
+    n = recvfrom(sockfd, buffer, MAXUDPSIZE,  
+                MSG_WAITALL, (struct sockaddr *) &servaddr, 
+                &len);
+    if (n > HEADERLENGTH)
+        fprintf(stderr, "Payload received from server:\n%s\n", &buffer[12]);
+    memset(&packet_header, 0, sizeof(packet_header));
+    memcpy(&packet_header, &buffer, HEADERLENGTH);
+    if (packet_header.SeqNum == AckNum)
+        AckNum += 1;
+    int packet_idx = (packet_header.AckNum - 1 - send_base) / MAXPAYLOADSIZE; // returns the window index of the ACKed packet
+    if (window[packet_idx].acked)
+        printHeader(&packet_header, 0, 1);
+    else 
+        printHeader(&packet_header, 0, 0);
+    
+    window[packet_idx].acked = 1;
+    if (packet_idx == send_base_idx) {
+        int i;
+        for (i = 0; i < WINDOWSIZE; i++) {
+            if (window[(packet_idx + i) % WINDOWSIZE].acked) {
+                send_base = packet_header.AckNum;
+                send_base_idx = (send_base_idx + 1) % WINDOWSIZE;
+                if (sendPacket())
+                    return 1;
+            }
+            else
+                break;
+        }
+    }
     return 0;
 }
   
@@ -67,7 +167,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: ./client <server IP address> <port number> <object requested>\n");
         exit(1);
     }
-    srand(time(0));
   
     // Creating socket file descriptor 
     if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) { 
@@ -82,27 +181,18 @@ int main(int argc, char** argv) {
     servaddr.sin_addr.s_addr = inet_addr(argv[1]); 
 
     initConnection();
-    
-    /*
-    int n, len, sent; 
-      
-    sent = sendto(sockfd, (const char *)hello, strlen(hello), 
-        0, (const struct sockaddr *) &servaddr,  
-            sizeof(servaddr)); 
-    if (sent < 0) {
-        perror("Error on sendto");
-        exit(EXIT_FAILURE);
+    filefd = open(argv[3], O_RDONLY);
+    if (sendPacket())
+        fprintf(stderr, "Reached end of file\n");
+    else {
+        while(1) {
+            if (receivePacket())
+                break;
+        }
     }
 
-    printf("Hello message sent.\n"); 
-          
-    n = recvfrom(sockfd, (char *)buffer, MAXLINE,  
-                MSG_WAITALL, (struct sockaddr *) &servaddr, 
-                &len); 
-    buffer[n] = '\0'; 
-    printf("Server : %s\n", buffer); 
-    */
-  
+    
     close(sockfd); 
+    close(filefd);
     return 0; 
 } 
