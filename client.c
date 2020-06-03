@@ -15,7 +15,7 @@
 #define MAXSEQNUM 25601
 #define MAXUDPSIZE 524 
 #define HEADERLENGTH 12
-#define MAXPAYLOADSIZE MAXUDPSIZE - HEADERLENGTH
+#define MAXPAYLOADSIZE 512
 #define WINDOWSIZE 10
 
 
@@ -44,7 +44,11 @@ struct Header {
     uint16_t SYN;
     uint16_t FIN;
     char zero[2];
-} packet_header;
+} send_ph, rcv_ph;
+
+int modulo(int x,int N){
+    return (x % N + N) %N;
+}
 
 void printHeader(struct Header* header, int sender, int dup) {
     if (sender)
@@ -65,13 +69,13 @@ void printHeader(struct Header* header, int sender, int dup) {
 }
 
 int initConnection() {
-    memset(&packet_header, 0, sizeof(packet_header));
+    memset(&send_ph, 0, sizeof(send_ph));
     srand(time(0));
     uint16_t SeqNum = rand() % MAXSEQNUM;
-    packet_header.SeqNum = SeqNum;
-    packet_header.SYN = 1;
-    printHeader(&packet_header, 1, 0);
-    if (sendto(sockfd, (void *)&packet_header, sizeof(packet_header), 
+    send_ph.SeqNum = SeqNum;
+    send_ph.SYN = 1;
+    printHeader(&send_ph, 1, 0);
+    if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH, 
         0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
         perror("Error sending SYN to server");
         exit(EXIT_FAILURE);
@@ -85,11 +89,11 @@ int initConnection() {
         exit(EXIT_FAILURE);
     }
 
-    memset(&packet_header, 0, sizeof(packet_header));
-    memcpy(&packet_header, &buffer, 12);
-    printHeader(&packet_header, 0, 0);
-    AckNum = packet_header.SeqNum + 1;
-    send_base = packet_header.AckNum;
+    memset(&rcv_ph, 0, sizeof(rcv_ph));
+    memcpy(&rcv_ph, &buffer, 12);
+    printHeader(&rcv_ph, 0, 0);
+    AckNum = rcv_ph.SeqNum + 1;
+    send_base = rcv_ph.AckNum;
     nextseqnum = send_base;
     send_base_idx = 0;
     nextseqnum_idx = 0;
@@ -99,23 +103,23 @@ int initConnection() {
 }
 
 int sendPacket() {
-    memset(&packet_header, 0, sizeof(packet_header));
-    packet_header.SeqNum = nextseqnum;
-    packet_header.AckNum = AckNum;
+    memset(&send_ph, 0, sizeof(send_ph));
+    send_ph.SeqNum = nextseqnum;
+    send_ph.AckNum = AckNum;
     memset(&buffer, 0, sizeof(buffer));
-    memcpy(&buffer, &packet_header, HEADERLENGTH);
+    memcpy(&buffer, &send_ph, HEADERLENGTH);
     n = read(filefd, &buffer[HEADERLENGTH], MAXPAYLOADSIZE);
     if (n < 0) {
         perror("Error reading from filefd");
         exit(EXIT_FAILURE);
     }
-    memcpy(&window[nextseqnum_idx], &buffer[HEADERLENGTH], n);
+    memcpy(&window[nextseqnum_idx].buffer, &buffer[HEADERLENGTH], n);
     if (sendto(sockfd, (void *)&buffer, HEADERLENGTH + n,
             0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
         perror("Error sending packet to server");
         exit(EXIT_FAILURE);
     }
-    printHeader(&packet_header, 1, 0);
+    printHeader(&send_ph, 1, 0);
     
     
     nextseqnum_idx = (nextseqnum_idx + 1) % WINDOWSIZE;
@@ -133,24 +137,23 @@ int receivePacket() {
     n = recvfrom(sockfd, buffer, MAXUDPSIZE,  
                 MSG_WAITALL, (struct sockaddr *) &servaddr, 
                 &len);
-    if (n > HEADERLENGTH)
-        fprintf(stderr, "Payload received from server:\n%s\n", &buffer[12]);
-    memset(&packet_header, 0, sizeof(packet_header));
-    memcpy(&packet_header, &buffer, HEADERLENGTH);
-    if (packet_header.SeqNum == AckNum)
+    memset(&rcv_ph, 0, sizeof(rcv_ph));
+    memcpy(&rcv_ph, &buffer, HEADERLENGTH);
+    if (rcv_ph.SeqNum == AckNum)
         AckNum += 1;
-    int packet_idx = (packet_header.AckNum - 1 - send_base) / MAXPAYLOADSIZE; // returns the window index of the ACKed packet
+    int packet_idx = (modulo(rcv_ph.AckNum - 1 - send_base, MAXSEQNUM) / MAXPAYLOADSIZE + send_base_idx) % WINDOWSIZE; // returns the window index of the ACKed packet
     if (window[packet_idx].acked)
-        printHeader(&packet_header, 0, 1);
+        printHeader(&rcv_ph, 0, 1);
     else 
-        printHeader(&packet_header, 0, 0);
+        printHeader(&rcv_ph, 0, 0);
     
     window[packet_idx].acked = 1;
     if (packet_idx == send_base_idx) {
         int i;
         for (i = 0; i < WINDOWSIZE; i++) {
             if (window[(packet_idx + i) % WINDOWSIZE].acked) {
-                send_base = packet_header.AckNum;
+                window[(packet_idx + i) % WINDOWSIZE].acked = 0;
+                send_base = rcv_ph.AckNum;
                 send_base_idx = (send_base_idx + 1) % WINDOWSIZE;
                 if (sendPacket())
                     return 1;
@@ -167,7 +170,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Usage: ./client <server IP address> <port number> <object requested>\n");
         exit(1);
     }
-  
+
     // Creating socket file descriptor 
     if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) { 
         perror("socket creation failed"); 

@@ -44,4 +44,3 @@ Turns off the microphone. Turns it back on again.
 		find out what kind of trees these are. They're
 		really something.
      
-Turns off the microphone. Whistles "Rhapsody in Blue."
