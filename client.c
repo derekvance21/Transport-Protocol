@@ -36,6 +36,7 @@ uint16_t nextseqnum;
 uint16_t nextseqnum_idx;
 
 uint16_t AckNum;
+uint16_t isACK;
 
 struct Header {
     uint16_t SeqNum;
@@ -97,13 +98,67 @@ int initConnection() {
     nextseqnum = send_base;
     send_base_idx = 0;
     nextseqnum_idx = 0;
+    isACK = 1;
     memset(&window, 0, sizeof(window));
 
     return 0;
 }
 
+int sendFIN() {
+    memset(&send_ph, 0, sizeof(send_ph));
+    send_ph.SeqNum = nextseqnum;
+    send_ph.FIN = 1;
+    printHeader(&send_ph, 1, 0);
+    if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH, 
+        0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        perror("Error sending SYN to server");
+        exit(EXIT_FAILURE);
+    }
+    nextseqnum += 1;
+}
+
+int closeConnection() {
+    sendFIN();
+    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
+                MSG_WAITALL, (struct sockaddr *) &servaddr, 
+                &len);
+    if (n < 0) {
+        perror("Error receiving SYN ACK from server");
+        exit(EXIT_FAILURE);
+    }
+    memset(&rcv_ph, 0, sizeof(rcv_ph));
+    memcpy(&rcv_ph, &buffer, 12);
+    printHeader(&rcv_ph, 0, 0);
+    AckNum = rcv_ph.SeqNum + 1;
+    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,
+                MSG_WAITALL, (struct sockaddr *) &servaddr,
+                &len);
+    memset(&rcv_ph, 0, sizeof(rcv_ph));
+    memcpy(&rcv_ph, &buffer, 12);
+    printHeader(&rcv_ph, 0, 0);
+    AckNum = rcv_ph.SeqNum + 1;
+    // received server FIN
+    memset(&send_ph, 0, sizeof(send_ph));
+    send_ph.SeqNum = nextseqnum;
+    send_ph.AckNum = AckNum;
+    send_ph.ACK = 1;
+    
+    if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH, 
+        0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        perror("Error sending SYN to server");
+        exit(EXIT_FAILURE);
+    }
+    printHeader(&send_ph, 1, 0);
+    nextseqnum = (nextseqnum + 1) % MAXSEQNUM;
+    
+}
+
 int sendPacket() {
     memset(&send_ph, 0, sizeof(send_ph));
+    if (isACK) {
+        send_ph.ACK = 1;
+        isACK = 0;
+    }
     send_ph.SeqNum = nextseqnum;
     send_ph.AckNum = AckNum;
     memset(&buffer, 0, sizeof(buffer));
@@ -121,13 +176,12 @@ int sendPacket() {
     }
     printHeader(&send_ph, 1, 0);
     
-    
     nextseqnum_idx = (nextseqnum_idx + 1) % WINDOWSIZE;
     nextseqnum = (nextseqnum + n) % MAXSEQNUM;
 
-
-    if (n < MAXPAYLOADSIZE) // sender has reached end of file
+    if (n < MAXPAYLOADSIZE) { // sender has reached end of file
         return 1;
+    }
     else
         return 0;
 }
@@ -139,8 +193,9 @@ int receivePacket() {
                 &len);
     memset(&rcv_ph, 0, sizeof(rcv_ph));
     memcpy(&rcv_ph, &buffer, HEADERLENGTH);
-    if (rcv_ph.SeqNum == AckNum)
+    if (rcv_ph.SeqNum == AckNum) {
         AckNum += 1;
+    }
     int packet_idx = (modulo(rcv_ph.AckNum - 1 - send_base, MAXSEQNUM) / MAXPAYLOADSIZE + send_base_idx) % WINDOWSIZE; // returns the window index of the ACKed packet
     if (window[packet_idx].acked)
         printHeader(&rcv_ph, 0, 1);
@@ -155,11 +210,17 @@ int receivePacket() {
                 window[(packet_idx + i) % WINDOWSIZE].acked = 0;
                 send_base = rcv_ph.AckNum;
                 send_base_idx = (send_base_idx + 1) % WINDOWSIZE;
-                if (sendPacket())
-                    return 1;
+                // if (sendPacket()) { // Sent FIN packet to server
+                    
+                //     // return 1;
+                // }
             }
             else
                 break;
+        }
+        fprintf(stderr, "nsn_idx: %d, sb_idx: %d\n", nextseqnum_idx, send_base_idx);
+        if (i == modulo(nextseqnum_idx - send_base_idx, WINDOWSIZE)) {
+            return 1;
         }
     }
     return 0;
@@ -185,14 +246,17 @@ int main(int argc, char** argv) {
 
     initConnection();
     filefd = open(argv[3], O_RDONLY);
-    if (sendPacket())
-        fprintf(stderr, "Reached end of file\n");
-    else {
-        while(1) {
-            if (receivePacket())
-                break;
+    int i;
+    for (i = 0; i < WINDOWSIZE; i++) {
+        if (sendPacket()) {
+            break;
         }
     }
+    while(1) {
+        if (receivePacket())
+            break;
+    }
+    closeConnection();
 
     
     close(sockfd); 

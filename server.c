@@ -106,6 +106,33 @@ int initConnection() {
     return 0;
 }
 
+int closeConnection() { // rcv_ph is a FIN packet
+    memset(&send_ph, 0, sizeof(send_ph));
+    send_ph.SeqNum = SeqNum;
+    send_ph.AckNum = rcv_base;
+    send_ph.ACK = 1;
+    if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH,
+            0, (const struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0) {
+        perror("Error sending ACK packet to client");
+        exit(EXIT_FAILURE);
+    }
+    memset(&send_ph, 0, sizeof(send_ph));
+    send_ph.SeqNum = SeqNum;
+    send_ph.AckNum = rcv_base;
+    send_ph.FIN = 1;
+    if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH,
+            0, (const struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0) {
+        perror("Error sending ACK packet to client");
+        exit(EXIT_FAILURE);
+    }
+    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
+                MSG_WAITALL, (struct sockaddr *) &cliaddr, 
+                &len);
+    memset(&rcv_ph, 0, sizeof(rcv_ph));
+
+    return 0;
+}
+
 int sendPacket(uint16_t AckNum) {
     memset(&send_ph, 0, sizeof(send_ph));
     send_ph.SeqNum = SeqNum;
@@ -116,7 +143,6 @@ int sendPacket(uint16_t AckNum) {
         perror("Error sending ACK packet to client");
         exit(EXIT_FAILURE);
     }
-    SeqNum += 1;
     int packet_idx = (modulo(AckNum - 1 - rcv_base, MAXSEQNUM) / MAXPAYLOADSIZE + rcv_base_idx) % WINDOWSIZE;
     if (window[packet_idx].received)
         printHeader(&send_ph, 1, 1);
@@ -130,6 +156,9 @@ int receivePacket() {
                 (struct sockaddr *) &cliaddr, &len);
     memset(&rcv_ph, 0, sizeof(rcv_ph));
     memcpy(&rcv_ph, &buffer, HEADERLENGTH);
+    if (rcv_ph.FIN) {
+        return 1;
+    }
     int packet_idx = ((rcv_ph.SeqNum - rcv_base) / MAXPAYLOADSIZE + rcv_base_idx) % WINDOWSIZE;
     int payload_len = n - HEADERLENGTH;
     memcpy(&window[packet_idx].buffer, &buffer[HEADERLENGTH], payload_len);
@@ -150,10 +179,12 @@ int receivePacket() {
                 break;
         }
     }
+    /*
     if (n < MAXPAYLOADSIZE)
         return 1;
     else
-        return 0;
+        return 0; */
+    
 }
   
   
@@ -192,7 +223,8 @@ int main(int argc, char** argv) {
         if (receivePacket())
             break;
     }
-    
+    closeConnection();
+
     close(sockfd);
     close(filefd);
     return 0; 
