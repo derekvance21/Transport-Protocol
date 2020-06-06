@@ -9,6 +9,7 @@
 #include <arpa/inet.h> 
 #include <netinet/in.h> 
 #include <time.h>
+#include <sys/time.h>
 #include <fcntl.h>
   
 #define PORT 8080 
@@ -17,6 +18,8 @@
 #define HEADERLENGTH 12
 #define MAXPAYLOADSIZE 512
 #define WINDOWSIZE 10
+#define TIMEOUT 0.5
+#define SHUTDOWNTIME 2.0
 
 
 int sockfd, filefd, n;
@@ -30,6 +33,9 @@ struct WindowPacket {
 };
 
 struct WindowPacket window[WINDOWSIZE];
+struct timeval tv;
+double timeout_window[WINDOWSIZE];
+double timeout_cntrl;
 uint16_t send_base;
 uint16_t send_base_idx;
 uint16_t nextseqnum;
@@ -51,7 +57,28 @@ int modulo(int x,int N){
     return (x % N + N) %N;
 }
 
-void printHeader(struct Header* header, int sender, int dup) {
+double gettime() {
+    gettimeofday(&tv, NULL);
+    return (double) tv.tv_sec + (double) tv.tv_usec/1000000;
+}
+
+int isTimeout(int i) {
+    double now = gettime();
+    double timeout;
+    if (i < 0)
+        timeout = timeout_cntrl;
+    else
+        timeout = timeout_window[i];
+
+    if (now < timeout)
+        return 0;
+    else 
+        return 1;
+}
+
+void printHeader(struct Header* header, int sender, int resend) {
+    if (sender && resend)
+        printf("RE");
     if (sender)
         printf("SEND ");
     else
@@ -61,8 +88,8 @@ void printHeader(struct Header* header, int sender, int dup) {
         printf("SYN ");
     else if (header->FIN)
         printf("FIN ");
-    if (header->ACK && dup)
-        printf("DUP-ACK ");
+    // if (header->ACK && dup) should be only for server i think
+    //     printf("DUP-ACK ");
     if (header->ACK)
         printf("ACK ");
     printf("\n");
@@ -75,23 +102,36 @@ int initConnection() {
     uint16_t SeqNum = rand() % MAXSEQNUM;
     send_ph.SeqNum = SeqNum;
     send_ph.SYN = 1;
-    printHeader(&send_ph, 1, 0);
-    if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH, 
-        0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        perror("Error sending SYN to server");
-        exit(EXIT_FAILURE);
+    int resend = 0;
+    while (1) {
+        if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH, 
+            0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+            perror("Error sending SYN to server");
+            exit(EXIT_FAILURE);
+        }
+        len = sizeof(servaddr);
+        timeout_cntrl = gettime() + TIMEOUT;
+        printHeader(&send_ph, 1, resend);
+        resend = 1;
+        while (1) {
+            n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
+                        MSG_WAITALL, (struct sockaddr *) &servaddr, 
+                        &len);
+            // if (n < 0) { // nothing to read from socket
+            //     perror("Error receiving SYN ACK from server");
+            // }
+            if (n > 0) {
+                memset(&rcv_ph, 0, sizeof(rcv_ph));
+                memcpy(&rcv_ph, &buffer, 12);
+                break;
+            }
+            else if (isTimeout(-1)) {
+                printf("TIMEOUT %d\n", SeqNum);
+                break;
+            }
+        }
+        if (n > 0) break;
     }
-    len = sizeof(servaddr);
-    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
-                MSG_WAITALL, (struct sockaddr *) &servaddr, 
-                &len);
-    if (n < 0) {
-        perror("Error receiving SYN ACK from server");
-        exit(EXIT_FAILURE);
-    }
-
-    memset(&rcv_ph, 0, sizeof(rcv_ph));
-    memcpy(&rcv_ph, &buffer, 12);
     printHeader(&rcv_ph, 0, 0);
     AckNum = rcv_ph.SeqNum + 1;
     send_base = rcv_ph.AckNum;
@@ -104,38 +144,66 @@ int initConnection() {
     return 0;
 }
 
-int sendFIN() {
+int sendFIN(int resend) {
     memset(&send_ph, 0, sizeof(send_ph));
     send_ph.SeqNum = nextseqnum;
     send_ph.FIN = 1;
-    printHeader(&send_ph, 1, 0);
     if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH, 
         0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
         perror("Error sending SYN to server");
         exit(EXIT_FAILURE);
     }
-    nextseqnum += 1;
+    printHeader(&send_ph, 1, resend);
+    timeout_cntrl = gettime() + TIMEOUT;
 }
 
 int closeConnection() {
-    sendFIN();
-    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
-                MSG_WAITALL, (struct sockaddr *) &servaddr, 
-                &len);
-    if (n < 0) {
-        perror("Error receiving SYN ACK from server");
-        exit(EXIT_FAILURE);
+    int resend = 0;
+    while (1) {
+        sendFIN(resend);
+        resend = 1;
+        while (1) { // expect the ACK for the FIN
+            n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
+                        MSG_WAITALL, (struct sockaddr *) &servaddr, 
+                        &len);
+            // if (n < 0) {
+            //     perror("Error receiving SYN ACK from server");
+            //     exit(EXIT_FAILURE);
+            // }
+            if (n > 0) {
+                memset(&rcv_ph, 0, sizeof(rcv_ph));
+                memcpy(&rcv_ph, &buffer, 12);
+                printHeader(&rcv_ph, 0, 0);
+                break;
+            }
+            else if (isTimeout(-1)) {
+                printf("TIMEOUT %d\n", nextseqnum);
+                break;
+            }
+        }
+        if (n > 0) break;
     }
-    memset(&rcv_ph, 0, sizeof(rcv_ph));
-    memcpy(&rcv_ph, &buffer, 12);
-    printHeader(&rcv_ph, 0, 0);
-    AckNum = rcv_ph.SeqNum + 1;
-    n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,
+    while (1) { // expect the FIN
+        n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,
                 MSG_WAITALL, (struct sockaddr *) &servaddr,
                 &len);
-    memset(&rcv_ph, 0, sizeof(rcv_ph));
-    memcpy(&rcv_ph, &buffer, 12);
-    printHeader(&rcv_ph, 0, 0);
+        if (n > 0) {
+            memset(&rcv_ph, 0, sizeof(rcv_ph));
+            memcpy(&rcv_ph, &buffer, 12);
+            printHeader(&rcv_ph, 0, 0);
+            if (!rcv_ph.FIN)
+                continue;
+            else
+                break;
+        }
+        else if (isTimeout(-1)) {
+            printf("TIMEOUT%d\n", nextseqnum);
+            closeConnection();
+        }
+    }
+    nextseqnum += 1;
+
+    
     AckNum = rcv_ph.SeqNum + 1;
     // received server FIN
     memset(&send_ph, 0, sizeof(send_ph));
@@ -149,37 +217,58 @@ int closeConnection() {
         exit(EXIT_FAILURE);
     }
     printHeader(&send_ph, 1, 0);
-    nextseqnum = (nextseqnum + 1) % MAXSEQNUM;
-    
+    timeout_cntrl = gettime() + SHUTDOWNTIME;
+    nextseqnum = (nextseqnum + 1) % MAXSEQNUM; // don't think  i need this
+    while (1) {
+        if (isTimeout(-1))
+            break;
+    }
 }
 
-int sendPacket() {
+int sendPacket(int resend) {
     memset(&send_ph, 0, sizeof(send_ph));
     if (isACK) {
         send_ph.ACK = 1;
         isACK = 0;
     }
-    send_ph.SeqNum = nextseqnum;
     send_ph.AckNum = AckNum;
     memset(&buffer, 0, sizeof(buffer));
-    memcpy(&buffer, &send_ph, HEADERLENGTH);
-    n = read(filefd, &buffer[HEADERLENGTH], MAXPAYLOADSIZE);
-    if (n < 0) {
-        perror("Error reading from filefd");
-        exit(EXIT_FAILURE);
+
+    uint16_t payload_size = MAXPAYLOADSIZE;
+
+    if (resend) {
+        send_ph.SeqNum = send_base;
+        memcpy(&buffer, &send_ph, HEADERLENGTH);
+        if ((send_base_idx + 1) % WINDOWSIZE == nextseqnum_idx && modulo(nextseqnum - send_base, MAXPAYLOADSIZE) != 0) {
+            payload_size = modulo(nextseqnum - send_base, MAXSEQNUM);
+        }
+        memcpy(&buffer[HEADERLENGTH], &window[send_base_idx].buffer, payload_size);
     }
-    if (n == 0)
-        return 1;
-    memcpy(&window[nextseqnum_idx].buffer, &buffer[HEADERLENGTH], n);
-    if (sendto(sockfd, (void *)&buffer, HEADERLENGTH + n,
+    else {
+        send_ph.SeqNum = nextseqnum;
+        memcpy(&buffer, &send_ph, HEADERLENGTH);
+        n = read(filefd, &buffer[HEADERLENGTH], MAXPAYLOADSIZE);
+        if (n < 0) {
+            perror("Error reading from filefd");
+            exit(EXIT_FAILURE);
+        }
+        if (n == 0)
+            return 1;
+        memcpy(&window[nextseqnum_idx].buffer, &buffer[HEADERLENGTH], n);
+        payload_size = n;
+    }
+    if (sendto(sockfd, (void *)&buffer, HEADERLENGTH + payload_size,
             0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        perror("Error sending packet to server");
-        exit(EXIT_FAILURE);
+            perror("Error sending packet to server");
+            exit(EXIT_FAILURE);
     }
-    printHeader(&send_ph, 1, 0);
-    
-    nextseqnum_idx = (nextseqnum_idx + 1) % WINDOWSIZE;
-    nextseqnum = (nextseqnum + n) % MAXSEQNUM;
+    timeout_window[nextseqnum_idx] = gettime() + TIMEOUT;
+    if (!resend) {
+        nextseqnum_idx = (nextseqnum_idx + 1) % WINDOWSIZE;
+        nextseqnum = (nextseqnum + n) % MAXSEQNUM;
+    }
+
+    printHeader(&send_ph, 1, resend);
 
     if (n < MAXPAYLOADSIZE) { // sender has reached end of file
         return 1;
@@ -189,46 +278,56 @@ int sendPacket() {
 }
 
 int receivePacket() {
-    memset(&buffer, 0, sizeof(buffer));
-    n = recvfrom(sockfd, buffer, MAXUDPSIZE,  
-                MSG_WAITALL, (struct sockaddr *) &servaddr, 
-                &len);
-    memset(&rcv_ph, 0, sizeof(rcv_ph));
-    memcpy(&rcv_ph, &buffer, HEADERLENGTH);
-    // if (rcv_ph.SeqNum == AckNum) {
-    //     AckNum += 1;
-    // }
-    int packet_idx = (modulo(rcv_ph.AckNum - 1 - send_base, MAXSEQNUM) / MAXPAYLOADSIZE + send_base_idx) % WINDOWSIZE; // returns the window index of the ACKed packet
-    if (window[packet_idx].acked)
-        printHeader(&rcv_ph, 0, 1);
-    else 
-        printHeader(&rcv_ph, 0, 0);
-    fprintf(stderr, "packet_idx: %d, ", packet_idx);
-    window[packet_idx].acked = 1;
-    if (packet_idx == send_base_idx) {
-        int i;
-        for (i = 0; i < WINDOWSIZE; i++) {
-            if (window[(packet_idx + i) % WINDOWSIZE].acked) {
-                //fprintf(stderr, "packet is acked\n");
-                window[(packet_idx + i) % WINDOWSIZE].acked = 0;
-                send_base = rcv_ph.AckNum;
-                send_base_idx = (send_base_idx + 1) % WINDOWSIZE;
-                if (sendPacket()) {
-                    continue;
+    int resend = 0;
+    while(1) {
+        memset(&buffer, 0, sizeof(buffer));
+        n = recvfrom(sockfd, buffer, MAXUDPSIZE,  
+                    MSG_WAITALL, (struct sockaddr *) &servaddr, 
+                    &len);
+        if (n > 0) {
+            memset(&rcv_ph, 0, sizeof(rcv_ph));
+            memcpy(&rcv_ph, &buffer, HEADERLENGTH);
+            // if (rcv_ph.SeqNum == AckNum) {
+            //     AckNum += 1;
+            // }
+            int packet_idx = (modulo(rcv_ph.AckNum - 1 - send_base, MAXSEQNUM) / MAXPAYLOADSIZE + send_base_idx) % WINDOWSIZE; // returns the window index of the ACKed packet
+            if (window[packet_idx].acked)
+                printHeader(&rcv_ph, 0, 1);
+            else 
+                printHeader(&rcv_ph, 0, 0);
+            // fprintf(stderr, "packet_idx: %d, ", packet_idx);
+            window[packet_idx].acked = 1;
+            int orig_nextseqnum_idx = nextseqnum_idx;
+            if (packet_idx == send_base_idx) {
+                int i;
+                for (i = 0; i < WINDOWSIZE; i++) {
+                    if (window[(packet_idx + i) % WINDOWSIZE].acked) {
+                        //fprintf(stderr, "packet is acked\n");
+                        window[(packet_idx + i) % WINDOWSIZE].acked = 0;
+                        send_base = rcv_ph.AckNum;
+                        send_base_idx = (send_base_idx + 1) % WINDOWSIZE;
+                        if (sendPacket(0)) {
+                            continue;
+                        }
+                    }
+                    else
+                        break;
+                }
+                // fprintf(stderr, "i: %d, sb_idx %d, nsn_idx: %d\n", i, send_base_idx, nextseqnum_idx);
+                if (i == modulo(orig_nextseqnum_idx - packet_idx/*send_base_idx*/, WINDOWSIZE)) {
+                    return 1;
                 }
             }
-            else
-                break;
         }
-        fprintf(stderr, "i: %d, sb_idx %d, nsn_idx: %d\n", i, send_base_idx, nextseqnum_idx);
-        if (i == modulo(nextseqnum_idx - send_base_idx, WINDOWSIZE)) {
-            return 1;
+        if (isTimeout(send_base_idx)) {
+            printf("TIMEOUT %d\n", send_base);
         }
     }
     return 0;
 }
   
 int main(int argc, char** argv) {
+    
     if (argc != 4) {
         fprintf(stderr, "Usage: ./client <server IP address> <port number> <object requested>\n");
         exit(1);
@@ -246,12 +345,13 @@ int main(int argc, char** argv) {
     servaddr.sin_port = htons((uint16_t)atoi(argv[2]));
     servaddr.sin_addr.s_addr = inet_addr(argv[1]); 
 
+    fcntl(sockfd, F_SETFL, O_NONBLOCK);
     initConnection();
     filefd = open(argv[3], O_RDONLY);
 
     int i;
     for (i = 0; i < WINDOWSIZE; i++) {
-        if (sendPacket()) {
+        if (sendPacket(0)) {
             break;
         }
     }

@@ -163,6 +163,7 @@ int receivePacket() {
     printHeader(&rcv_ph, 0, 0);
 
     if (rcv_ph.FIN) {
+        rcv_base += 1;
         return 1;
     }
     int packet_idx = ((rcv_ph.SeqNum - rcv_base) / MAXPAYLOADSIZE + rcv_base_idx) % WINDOWSIZE;
@@ -223,15 +224,16 @@ int main(int argc, char** argv) {
         exit(EXIT_FAILURE); 
     } 
 
-    initConnection();
-
-    while (1) {
-        if (receivePacket())
-            break;
+    while(1) {
+        initConnection();
+        while (1) {
+            if (receivePacket())
+                break;
+        }
+        closeConnection();
+        close(filefd);
     }
-    closeConnection();
 
     close(sockfd);
-    close(filefd);
     return 0; 
 } 
