@@ -116,19 +116,23 @@ int closeConnection() { // rcv_ph is a FIN packet
         perror("Error sending ACK packet to client");
         exit(EXIT_FAILURE);
     }
+    printHeader(&send_ph, 1, 0);
     memset(&send_ph, 0, sizeof(send_ph));
     send_ph.SeqNum = SeqNum;
-    send_ph.AckNum = rcv_base;
+    //send_ph.AckNum = rcv_base;
     send_ph.FIN = 1;
     if (sendto(sockfd, (void *)&send_ph, HEADERLENGTH,
             0, (const struct sockaddr *)&cliaddr, sizeof(cliaddr)) < 0) {
         perror("Error sending ACK packet to client");
         exit(EXIT_FAILURE);
     }
+    printHeader(&send_ph, 1, 0);
     n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,  
                 MSG_WAITALL, (struct sockaddr *) &cliaddr, 
                 &len);
     memset(&rcv_ph, 0, sizeof(rcv_ph));
+    memcpy(&rcv_ph, &buffer, sizeof(rcv_ph));
+    printHeader(&rcv_ph, 0, 0);
 
     return 0;
 }
@@ -156,13 +160,14 @@ int receivePacket() {
                 (struct sockaddr *) &cliaddr, &len);
     memset(&rcv_ph, 0, sizeof(rcv_ph));
     memcpy(&rcv_ph, &buffer, HEADERLENGTH);
+    printHeader(&rcv_ph, 0, 0);
+
     if (rcv_ph.FIN) {
         return 1;
     }
     int packet_idx = ((rcv_ph.SeqNum - rcv_base) / MAXPAYLOADSIZE + rcv_base_idx) % WINDOWSIZE;
     int payload_len = n - HEADERLENGTH;
     memcpy(&window[packet_idx].buffer, &buffer[HEADERLENGTH], payload_len);
-    printHeader(&rcv_ph, 0, 0);
     sendPacket((rcv_ph.SeqNum + payload_len) % MAXSEQNUM);
     window[packet_idx].received = 1;
     if (rcv_ph.SeqNum == rcv_base) {
@@ -196,10 +201,10 @@ int main(int argc, char** argv) {
     srand(time(0));
       
     // Creating socket file descriptor 
-    if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) { 
-        perror("socket creation failed"); 
-        exit(EXIT_FAILURE); 
-    } 
+    if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
+        perror("socket creation failed");
+        exit(EXIT_FAILURE);
+    }
     // fcntl(sockfd, F_SETFL, O_NONBLOCK);
       
     memset(&servaddr, 0, sizeof(servaddr)); 
@@ -219,6 +224,7 @@ int main(int argc, char** argv) {
     } 
 
     initConnection();
+
     while (1) {
         if (receivePacket())
             break;

@@ -168,6 +168,8 @@ int sendPacket() {
         perror("Error reading from filefd");
         exit(EXIT_FAILURE);
     }
+    if (n == 0)
+        return 1;
     memcpy(&window[nextseqnum_idx].buffer, &buffer[HEADERLENGTH], n);
     if (sendto(sockfd, (void *)&buffer, HEADERLENGTH + n,
             0, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
@@ -193,32 +195,32 @@ int receivePacket() {
                 &len);
     memset(&rcv_ph, 0, sizeof(rcv_ph));
     memcpy(&rcv_ph, &buffer, HEADERLENGTH);
-    if (rcv_ph.SeqNum == AckNum) {
-        AckNum += 1;
-    }
+    // if (rcv_ph.SeqNum == AckNum) {
+    //     AckNum += 1;
+    // }
     int packet_idx = (modulo(rcv_ph.AckNum - 1 - send_base, MAXSEQNUM) / MAXPAYLOADSIZE + send_base_idx) % WINDOWSIZE; // returns the window index of the ACKed packet
     if (window[packet_idx].acked)
         printHeader(&rcv_ph, 0, 1);
     else 
         printHeader(&rcv_ph, 0, 0);
-    
+    fprintf(stderr, "packet_idx: %d, ", packet_idx);
     window[packet_idx].acked = 1;
     if (packet_idx == send_base_idx) {
         int i;
         for (i = 0; i < WINDOWSIZE; i++) {
             if (window[(packet_idx + i) % WINDOWSIZE].acked) {
+                //fprintf(stderr, "packet is acked\n");
                 window[(packet_idx + i) % WINDOWSIZE].acked = 0;
                 send_base = rcv_ph.AckNum;
                 send_base_idx = (send_base_idx + 1) % WINDOWSIZE;
-                // if (sendPacket()) { // Sent FIN packet to server
-                    
-                //     // return 1;
-                // }
+                if (sendPacket()) {
+                    continue;
+                }
             }
             else
                 break;
         }
-        fprintf(stderr, "nsn_idx: %d, sb_idx: %d\n", nextseqnum_idx, send_base_idx);
+        fprintf(stderr, "i: %d, sb_idx %d, nsn_idx: %d\n", i, send_base_idx, nextseqnum_idx);
         if (i == modulo(nextseqnum_idx - send_base_idx, WINDOWSIZE)) {
             return 1;
         }
@@ -246,6 +248,7 @@ int main(int argc, char** argv) {
 
     initConnection();
     filefd = open(argv[3], O_RDONLY);
+
     int i;
     for (i = 0; i < WINDOWSIZE; i++) {
         if (sendPacket()) {
