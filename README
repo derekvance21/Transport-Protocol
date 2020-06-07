@@ -1,0 +1,32 @@
+NAME: Derek Vance
+EMAIL: dvance@g.ucla.edu
+ID: 604970765
+
+1. 
+    I chose to implement the Selective Repeat method. The client and server both have a window of size 10. 
+Each packet sent over the connection has an index corresponding to the location in the window. For a large file, 
+thus, the client will send 10 packets with indexes 1-10. Additionally, each packet includes the SeqNum, AckNum, 
+FIN, SYN, and ACK fields.
+    The programs start with connection. After, the server goes into a loop of receiving packets, while the client sends 
+as many packets as possible, then also goes into a loop of receiving packets. When the server receives a packet, 
+it may write to the output file if the index is correct, and will send an ACK message. When the client receives an 
+ACK message, it may advance it's window forward if the received index is a correct value for doing so, or if not 
+will mark that packet in the window as acked. After the client has sent every possible packet, it waits to receive 
+every ACK, resending if necessary, and then initiates the connection shutdown.
+
+2. 
+    The biggest general problem I had was trying to make lightweight programs at first. I skimped on my window 
+implementation, header fields and much much more, but in the end in bit me, and I had to go in and implement 
+new features later. 
+    Not having the packet index as part of the header was a mistake for me. I had to do lots of 
+crazy modulo arithmetic, and eventually I ran into a problem when the client or server receives a packet that is 
+behind the send_base and rcv_base, respectively. Maybe there was a way around it using only the SeqNum and AckNum, 
+but I kept finding edge cases and decided to bag it.
+    Also, I should've done more to help myself debug. A stupid mistake was easily fixed once I made a simple 
+printWindow function so that I could see where my window handling was going wrong. Lastly, I definitely should've 
+spent more time understanding the protocol before jumping into coding. Once you have a sizeable enough codebase, 
+it becomes hard to pivot or even see where you could've done something differently. So I definitely would've spent 
+a lot of time thinking about my data structures and high level design more.
+
+3.
+    I used the project 2 tutorial made by one of the TAs for help.
