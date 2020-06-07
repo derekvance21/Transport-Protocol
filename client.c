@@ -98,7 +98,7 @@ void printHeader(struct Header* header, int sender, int resend) {
     //     printf("DUP-ACK ");
     if (header->ACK)
         printf("ACK ");
-    printf("(%d)", header->idx);
+    // printf("(%d)", header->idx);
     printf("\n");
 }
 
@@ -173,6 +173,7 @@ int sendFIN(int resend) {
 }
 
 int closeConnection(int resend) {
+    int FIN_received = 0;
     while (1) {
         sendFIN(resend);
         resend = 1;
@@ -193,15 +194,20 @@ int closeConnection(int resend) {
                     cont = 1;
                     break;
                 }
+                if (rcv_ph.FIN) {
+                    cont = 1;
+                    FIN_received = 1;
+                    break;
+                }
             }
             else if (isTimeout(-1)) {
                 printf("TIMEOUT %d\n", nextseqnum);
                 break;
             }
         }
-        if (n > 0 && cont) break;
+        if (cont) break;
     }
-    while (1) { // expect the FIN
+    while (!FIN_received) { // expect the FIN
         n = recvfrom(sockfd, (char *)buffer, MAXUDPSIZE,
                 MSG_WAITALL, (struct sockaddr *) &servaddr,
                 &len);
@@ -353,7 +359,7 @@ int receivePacket() {
             for (i = 0; i < WINDOWSIZE; i++) {
                 int packet_idx = (i + send_base_idx) % WINDOWSLOTS;
                 if (!window[packet_idx].acked && window[packet_idx].sent && isTimeout(packet_idx)) {
-                    printf("TIMEOUT %d (%d)\n", (i * MAXPAYLOADSIZE + send_base) % MAXSEQNUM, packet_idx);
+                    printf("TIMEOUT %d\n", (i * MAXPAYLOADSIZE + send_base) % MAXSEQNUM);
                     sendPacket(1, packet_idx);
                 }
             }

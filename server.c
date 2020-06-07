@@ -67,7 +67,7 @@ void printHeader(struct Header* header, int sender, int dup) {
         printf("DUP-");
     if (header->ACK)
         printf("ACK ");
-    printf("(%d)", header->idx);
+    //printf("(%d)", header->idx);
     printf("\n");   
 }
 
