@@ -353,7 +353,7 @@ int receivePacket() {
             for (i = 0; i < WINDOWSIZE; i++) {
                 int packet_idx = (i + send_base_idx) % WINDOWSLOTS;
                 if (!window[packet_idx].acked && window[packet_idx].sent && isTimeout(packet_idx)) {
-                    printf("TIMEOUT %d\n", (i * MAXPAYLOADSIZE + send_base) % MAXSEQNUM);
+                    printf("TIMEOUT %d (%d)\n", (i * MAXPAYLOADSIZE + send_base) % MAXSEQNUM, packet_idx);
                     sendPacket(1, packet_idx);
                 }
             }
