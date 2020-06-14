@@ -2,6 +2,14 @@ NAME: Derek Vance
 EMAIL: dvance@g.ucla.edu
 ID: 604970765
 
+Usage:
+    ./server <port number>
+    ./client <IP address> <port number> <file*>
+Files*:
+    short.txt - 196 byte file, can be sent in a single packet
+    monologue.txt - 1907 byte file, can be sent in less than ten packets
+    act1.txt - 23462 byte file, takes multiple window lengths to send
+
 1. 
     I chose to implement the Selective Repeat method. The client and server both have a window of size 10. 
 Each packet sent over the connection has an index corresponding to the location in the window. For a large file, 

@@ -67,14 +67,12 @@ void printHeader(struct Header* header, int sender, int dup) {
         printf("DUP-");
     if (header->ACK)
         printf("ACK ");
-    //printf("(%d)", header->idx);
     printf("\n");   
 }
 
 void printWindow() {
     int i;
     for (i = 0; i < WINDOWSLOTS; i++) {
-        // idx = (i + rcv_base_idx) % WINDOWSLOTS;
         printf("%d:%d%d,", i, window[i].received, window[i].acceptable);
     }
     printf("\n");
@@ -196,7 +194,6 @@ int sendPacket(uint16_t AckNum, uint16_t idx) {
         perror("Error sending ACK packet to client");
         exit(EXIT_FAILURE);
     }
-    // int packet_idx = (modulo(AckNum - 1 - rcv_base, MAXSEQNUM) / MAXPAYLOADSIZE + rcv_base_idx) % WINDOWSIZE;
     if (!window[idx].acceptable)
         printHeader(&send_ph, 1, 1);
     else if (window[idx].received)
@@ -225,7 +222,7 @@ int receivePacket() {
         sendPacket((rcv_ph.SeqNum + payload_len) % MAXSEQNUM, rcv_ph.idx);
         return 0;
     }
-    // int packet_idx = ((rcv_ph.SeqNum - rcv_base) / MAXPAYLOADSIZE + rcv_base_idx) % WINDOWSIZE;
+
     int packet_idx = rcv_ph.idx;
     memcpy(&window[packet_idx].buffer, &buffer[HEADERLENGTH], payload_len);
     window[packet_idx].size = payload_len;
@@ -248,14 +245,7 @@ int receivePacket() {
                 break;
         }
     }
-    // printWindow();
     return 0;
-    /*
-    if (n < MAXPAYLOADSIZE)
-        return 1;
-    else
-        return 0; */
-    
 }
   
   
@@ -271,7 +261,6 @@ int main(int argc, char** argv) {
         perror("socket creation failed");
         exit(EXIT_FAILURE);
     }
-    // fcntl(sockfd, F_SETFL, O_NONBLOCK);
       
     memset(&servaddr, 0, sizeof(servaddr)); 
     memset(&cliaddr, 0, sizeof(cliaddr)); 
